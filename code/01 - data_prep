@@ -1,0 +1,140 @@
+---
+title: "data_prep"
+author: "Christopher Soria and Juana Montoya"
+date: "2024-07-17"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(dplyr)
+library(utils)
+
+read_census <- FALSE
+```
+
+```{r}
+numident_census <- fread("/data/censoc/censoc_data_releases/censoc_linked_to_census/v3/censoc_numident_v3_linked.csv")
+Zip_Features <- fread("/data/censoc/censoc_data_releases/geography_files/censoc_numident_geography_file/censoc_numident_geography_supplement_v1.csv", 
+                      colClasses = "character")
+```
+```{r}
+if (read_census == TRUE) {
+  census_1920 <- fread("/home/ipums/chrissoria-ipums/IPUMS2019-1/1920/TSV/P.tsv", 
+                       select = c("AGE", "SEX", "HISTID", "SERIALP", "RELATE")) %>% 
+    janitor::clean_names()
+
+  census_1940 <- fread("/home/ipums/chrissoria-ipums/IPUMS2019-1/1940/TSV/P.tsv", 
+                       select = c("HISTID","SUBSAMPL","HHWT","REGION","STATE","SMA","METRO","FARM","NEARN","EARN5K","SELFWTSL","STATEF","CTRYF","STATEM","CTRYM","VETERN","RECTYPE","SEX","RACE","AGE","MARSTA","SCHOOL","STATBI","CTRYBI","DIVSBI","REGBI","CITZEN","EMPLOY","HRWORK","WKUNEM","OCCUP","INDUS","CLASS","EARN","NONWAG","STAT35","METR35","DIVS35","REG35","MIGSTA","MIGDIS","SAMHOU","SAMPLA","SAMSMA","SAMSEA","SACCSM")) %>% 
+    janitor::clean_names()
+}
+rm(read_census)
+```
+
+
+
+
+```{r}
+numident_census$zip <- str_trunc(numident_census$zip_residence,width =  5, "right", ellipsis = "")
+numident_census$zip <- as.character(numident_census$zip)
+
+
+print(colnames(Zip_Features))
+```
+
+```{r}
+numident_census <- filter(numident_census, !is.na(zip) & zip != "")
+Zip_Features <- filter(Zip_Features, !is.na(death_zip) & death_zip != "")
+
+Num_Subset <- merge(numident_census, Zip_Features, by = "HISTID", all.x = TRUE,sort = FALSE)
+```
+
+```{r}
+rm(Zip_Features, numident_census)
+```
+
+```{r}
+Num_Subset <- filter(Num_Subset, byear %in% 1908:1923)
+
+Num_Subset <- filter(Num_Subset, dyear %in% 1988:2005)
+Num_Subset <- filter(Num_Subset, !is.na(death_state))
+Num_Subset <- filter(Num_Subset, !is.na(bpl))
+
+state_abb <- fread("/home/ipums/chrissoria-ipums/Migration_Mortality/State_Abbreviations.csv")
+
+colnames(state_abb)[1] ="bpl"
+
+Num_Subset <- merge(Num_Subset, state_abb, by = "bpl", all.x = TRUE,sort = FALSE)
+
+rm(state_abb)
+```
+
+What are the variables I will focus on?
+```{r}
+Num_Subset <- Num_Subset[,c("death_zip","HISTID","byear","dyear","socstate_string","race_first","bpl","bpl_string","death_age","sex","weight", #from numident
+                            "birth_gnis_code", "birth_city", "birth_county", "birth_fips", "birth_region", "death_city", "death_county", "death_fips", 
+                            "death_state", "death_region", "death_country", "death_ruc1993", #from geography file
+                            "ABBREVIATION", #from my abbreviation file
+                            "REGION","STATEFIP","URBAN","METRO","CITY","CITYPOP","CNTRY","FARM","RENT","VALUEH","NFATHERS","FAMSIZE","STEPPOP","SEX","AGE","MARST","RACE","HISPAN",
+                            "CITIZEN","EDUC","LABFORCE","OCC","CLASSWKR","VETSTAT")]
+```
+
+```{r}
+Num_Subset <- Num_Subset %>%
+  rename(
+    `1940c_REGION` = REGION,
+    `1940c_STATEFIP` = STATEFIP,
+    `1940c_URBAN` = URBAN,
+    `1940c_METRO` = METRO,
+    `1940c_CITY` = CITY,
+    `1940c_CITYPOP` = CITYPOP,
+    `1940c_CNTRY` = CNTRY,
+    `1940c_FARM` = FARM,
+    `1940c_RENT` = RENT,
+    `1940c_VALUEH` = VALUEH,
+    `1940c_NFATHERS` = NFATHERS,
+    `1940c_FAMSIZE` = FAMSIZE,
+    `1940c_STEPPOP` = STEPPOP,
+    `1940c_SEX` = SEX,
+    `1940c_AGE` = AGE,
+    `1940c_MARST` = MARST,
+    `1940c_RACE` = RACE,
+    `1940c_HISPAN` = HISPAN,
+    `1940c_CITIZEN` = CITIZEN,
+    `1940c_EDUC` = EDUC,
+    `1940c_LABFORCE` = LABFORCE,
+    `1940c_OCC` = OCC,
+    `1940c_CLASSWKR` = CLASSWKR,
+    `1940c_VETSTAT` = VETSTAT,
+    `bpl_abb` = ABBREVIATION
+  )
+```
+Because international migrants are a unique bunch, I want to restrict the sample to only those born in the United States
+```{r}
+Num_Subset_Natives <- filter(Num_Subset, !is.na(bpl_abb))
+rm(Num_Subset)
+```
+Because I need to compare birth state to death state, I'll make everything lowercase to standardize the text for comparison
+```{r}
+string_columns <- sapply(Num_Subset_Natives, is.character)
+
+Num_Subset_Natives <- Num_Subset_Natives %>%
+  mutate_at(vars(names(Num_Subset_Natives)[string_columns]), tolower)
+
+head(Num_Subset_Natives)
+rm(string_columns)
+```
+let's create the died out of state binary
+```{r}
+Num_Subset_Natives <- Num_Subset_Natives %>%
+  mutate(
+    died_out_of_state = ifelse(bpl_abb == death_state, 0, 1),
+    died_out_of_region = case_when(
+      is.na(birth_region) ~ NA_real_,
+      is.na(death_region) ~ NA_real_,
+      birth_region != death_region ~ 1,
+      TRUE ~ 0
+    )
+  )
+```
